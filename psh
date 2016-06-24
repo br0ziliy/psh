@@ -1,0 +1,144 @@
+#!/usr/bin/perl
+
+# psh - Personalized sSH
+# Author: Vasiliy Kaygorodov <vkaygorodov@gmail.com>
+# This script logs you in to a server of your choice and sets up the shell environment
+# according to your local profile
+
+use Expect;
+use Term::ReadKey;
+use IO::Socket;
+#use Data::Dumper;
+
+my $inventory = "/home/" .%ENV{'USER'}. "/.psh_inventory";
+
+sub mydebug {
+    my $msg = shift;
+    if (%ENV{'DEBUG'} == 1) { print "DEBUG: ".$msg."\n"; }
+}
+
+sub isalive {
+    my $host = shift;
+    my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => 22); # TODO: hardcoded port
+    if (defined($sock)){
+            mydebug("Host $host is alive");
+            return 1;
+    } else {
+            mydebug("Host $host is dead");
+            return 0;
+    }
+}
+
+sub find_hostname {
+    my $str = shift;
+    my @found;
+    open(my $i, "<", $inventory) or die "Cannot read $inventory: $!\n";
+    while(<$i>){
+        chomp;
+        if ($_ =~ /$str/) { push(@found, $_); }
+    }
+    close($i);
+    if (scalar(@found) > 1) { return \@found; }
+    elsif (defined(@found[0])) { return @found[0]; }
+    elsif (isalive($str)) {
+        open(my $i, ">>", $inventory) or die "Cannot write $inventory: $!\n";
+        print $i $str."\n";
+        mydebug("Recording $str to inventory");
+        close($i);
+        return $str; 
+    }
+    else {
+        print "No hosts found, exiting\n";
+        exit(1);
+    }
+    exit(244); # this should not happen
+}
+
+sub get_pass {
+    my $self = shift;
+
+    ReadMode( "noecho" );
+    print "???";
+    my $pwd = <STDIN>;
+    ReadMode ("original");
+    $self->send($pwd);
+    exp_continue;
+}
+
+if (!$ARGV[0]){
+	print "Usage: psh <hostname> [<other SSH options>]\n";
+	exit 0;
+}
+
+if ($ARGV[0] eq "help"){
+	print "help will be here in the future\n";
+	exit 0;
+}
+
+my $server;
+my $hostname;
+my $user = "root"; # TODO: hardcoded username
+my $connect_str;
+if ($ARGV[0] =~ /(\S+)@(\S+)/) {
+    $user = $1;
+    $server = find_hostname($2);
+} else {
+    $server = find_hostname($ARGV[0]);
+}
+mydebug("find_hostname() returned: $server\n");
+shift; # Everything else in @ARGV will be threated as ssh options
+
+if (ref($server) eq 'ARRAY'){
+    my $i = 0;
+    print "Choose the server to connect to:\n";
+    foreach my $s (@{$server}) {
+        print "\t$i -> $s\n";
+        $i++;
+    }
+    print "> ";
+    my $idx = <STDIN>;
+    if ($idx !~ /[0-9]+/ || not defined($server->[$idx])) { print "Incorrect input, existing\n";exit(1); }
+    else { $hostname = $server->[$idx]; }
+} else { $hostname = $server; }
+if (defined($hostname)) {
+    $connect_str = "ssh $user\@$hostname";
+} else {
+    print "Hostname not found, trying to connect anyway\n";
+    $connect_str = "ssh $user\@$server";
+}
+
+$connect_str .= " " . join(" ", @ARGV);
+mydebug("Running: ".$connect_str);
+my $exp = new Expect;
+# uncomment below for debugging Expect:
+#$exp->exp_internal(1);
+$exp->slave->clone_winsize_from(\*STDIN);
+$exp->spawn($connect_str) or die "Cannot connect: $!\n";
+$SIG{WINCH} = \&winch;
+sub winch {
+  $exp->slave->clone_winsize_from(\*STDIN);
+  kill WINCH => $exp->pid if $exp->pid;
+  $SIG{WINCH} = \&winch;
+}
+my $spawn_ok;
+my $timeout = 10;
+$exp->expect($timeout,
+    ['\(yes\/no\)\?', sub {
+                        $exp->send("yes\n");
+                        exp_continue;
+                      }	
+    ],
+    ['^Enter passphrase for key .*:\s+$', \&get_pass],
+    ['assword:\s+$', \&get_pass],
+    '-re', qr'[\$#>:]\s*(\033[0-9\[;m]*)?\s*$'
+);
+if (open(PROFILE, "<", "/home/".$ENV{'USER'}."/.psh_profile")){
+    while(<PROFILE>){
+        if ($_ =~ /^(\s+)?#/) { next; }
+        if ($_ =~ /^(\s+)?$/) { next; }
+        $exp->send("$_");
+    }
+}
+$exp->send("\n");
+$exp->interact();
+print "\033kbash\033\\";
