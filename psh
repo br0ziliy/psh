@@ -8,9 +8,27 @@
 use Expect;
 use Term::ReadKey;
 use IO::Socket;
-#use Data::Dumper;
+use Getopt::Long;
+use Data::Dumper;
 
 my $inventory = "/home/" .%ENV{'USER'}. "/.psh_inventory";
+
+my $server;
+my $hostname;
+my $ssh_port = 22;
+my $ssh_user = "root";
+GetOptions('port|p=i' => \$ssh_port,
+           'login|l=s' => \$ssh_user);
+my $ssh_opts = '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p '.$ssh_port.' ';
+my $connect_str = "ssh " . $ssh_opts . " ";
+
+if ($ARGV[0] =~ /(\S+)@(\S+)/) {
+    $ssh_user = $1;
+    $server = find_hostname($2);
+} else {
+    $server = find_hostname($ARGV[0]);
+}
+mydebug("find_hostname() returned: " . Dumper($server) . "\n");
 
 sub mydebug {
     my $msg = shift;
@@ -19,7 +37,7 @@ sub mydebug {
 
 sub isalive {
     my $host = shift;
-    my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => 22); # TODO: hardcoded port
+    my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $ssh_port);
     if (defined($sock)){
             mydebug("Host $host is alive");
             return 1;
@@ -65,29 +83,6 @@ sub get_pass {
     exp_continue;
 }
 
-if (!$ARGV[0]){
-	print "Usage: psh <hostname> [<other SSH options>]\n";
-	exit 0;
-}
-
-if ($ARGV[0] eq "help"){
-	print "help will be here in the future\n";
-	exit 0;
-}
-
-my $server;
-my $hostname;
-my $user = "root"; # TODO: hardcoded username
-my $connect_str;
-if ($ARGV[0] =~ /(\S+)@(\S+)/) {
-    $user = $1;
-    $server = find_hostname($2);
-} else {
-    $server = find_hostname($ARGV[0]);
-}
-mydebug("find_hostname() returned: $server\n");
-shift; # Everything else in @ARGV will be threated as ssh options
-
 if (ref($server) eq 'ARRAY'){
     my $i = 0;
     print "Choose the server to connect to:\n";
@@ -101,13 +96,12 @@ if (ref($server) eq 'ARRAY'){
     else { $hostname = $server->[$idx]; }
 } else { $hostname = $server; }
 if (defined($hostname)) {
-    $connect_str = "ssh $user\@$hostname";
+    $connect_str .= "$ssh_user\@$hostname";
 } else {
     print "Hostname not found, trying to connect anyway\n";
-    $connect_str = "ssh $user\@$server";
+    $connect_str .= "$ssh_user\@$server";
 }
 
-$connect_str .= " " . join(" ", @ARGV);
 mydebug("Running: ".$connect_str);
 my $exp = new Expect;
 # uncomment below for debugging Expect:
